@@ -1,0 +1,145 @@
+#!/usr/bin/env python
+import os
+import re
+import requests
+import sys
+from distutils.spawn import find_executable
+from docker.utils.utils import parse_devices
+
+from compose.cli.main import main
+from docker.api.client import APIClient as APIClient_orig
+from docker.errors import DockerException
+
+import contextlib
+import compose.cli.errors
+from compose.cli.errors import (
+  exit_with_error, handle_connection_errors as handle_connection_errors_orig
+)
+
+NVIDIA_DEFAULT_HOST = 'localhost'
+NVIDIA_DEFAULT_PORT = 3476
+NVIDIA_HOST = 'NV_HOST'
+
+
+class NvidiaConnectionError(DockerException):
+    def __init__(self, msg, nvidia_url):
+        self.msg = msg
+        self.url = nvidia_url
+
+
+class NvidiaAPIClient(APIClient_orig):
+    """
+    Version of APIClient that uses the nvidia-docker API to support nvidia GPUs
+
+    Requires `nvidia-docker` to be installed in order to function correctly
+
+    Example:
+
+        >>> import os, docker
+        >>> client = docker.from_env()
+        >>> os.environ['NV_GPU'] = '0 1'
+        >>> print(client.containers.run('nvidia/cuda', 'nvidia-smi'))
+        Wed Apr 12 20:22:34 2017
+        +-----------------------------------------------------------------------------+
+        | NVIDIA-SMI 375.39                 Driver Version: 375.39                    |
+        |-------------------------------+----------------------+----------------------+
+        | GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |
+        | Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |
+        |===============================+======================+======================|
+        |   0  TITAN X (Pascal)    Off  | 0000:01:00.0      On |                  N/A |
+        | 23%   38C    P8    10W / 250W |      1MiB / 12181MiB |      0%      Default |
+        +-------------------------------+----------------------+----------------------+
+        |   1  GeForce GTX 680     Off  | 0000:02:00.0     N/A |                  N/A |
+        | 31%   45C    P8    N/A /  N/A |    489MiB /  4036MiB |     N/A      Default |
+        +-------------------------------+----------------------+----------------------+
+        +-----------------------------------------------------------------------------+
+        | Processes:                                                       GPU Memory |
+        |  GPU       PID  Type  Process name                               Usage      |
+        |=============================================================================|
+        |    1                  Not Supported                                         |
+        +-----------------------------------------------------------------------------+
+    """  # noqa: E501
+
+    def is_nvidia_image(self, image):
+        return (self.inspect_image(image).get('Config', {}).get('Labels', {}).
+                get('com.nvidia.volumes.needed', None) == 'nvidia_driver')
+
+    def create_container_config(self, image, *args, **kwargs):
+        container_config = (super(NvidiaAPIClient, self).
+                            create_container_config(image, *args, **kwargs))
+
+        if self.is_nvidia_image(image):
+            add_nvidia_docker_to_config(container_config)
+
+        return container_config
+
+
+def get_nvidia_docker_endpoint():
+    host = os.environ.get(NVIDIA_HOST,
+                          "http://{}:{}".format(NVIDIA_DEFAULT_HOST,
+                                                NVIDIA_DEFAULT_PORT))
+    return host+'/docker/cli/json'
+
+
+def get_nvidia_configuration():
+    try:
+        return requests.get(get_nvidia_docker_endpoint()).json()
+    except requests.exceptions.ConnectionError:
+        raise NvidiaConnectionError((
+            "Couldn't connect to nvidia-driver-plugin at {url} - is it "
+            "running and accessible?.\n\n"
+            "Try: \"curl {url}\" or \"systemctl start nvidia-docker\"").format(
+            url=get_nvidia_docker_endpoint()), get_nvidia_docker_endpoint())
+
+
+def nvidia_docker_compatible():
+    return (sys.platform.startswith('linux') and
+            os.path.isfile('/proc/driver/nvidia/version') and
+            find_executable('nvidia-docker'))
+
+
+def add_nvidia_docker_to_config(container_config):
+
+    if not container_config.get('HostConfig', None):
+        container_config['HostConfig'] = {}
+
+    nvidia_config = get_nvidia_configuration()
+
+    # Setup the Volumes
+    container_config['HostConfig'].setdefault('VolumeDriver',
+                                              nvidia_config['VolumeDriver'])
+
+    container_config['HostConfig'].setdefault('Binds', [])
+    container_config['HostConfig']['Binds'].extend(nvidia_config['Volumes'])
+
+    # Get nvidia control devices
+    devices = container_config['HostConfig'].get('Devices', [])
+    # suport both '0 1' and '0, 1' formats, just like nvidia-docker
+    gpu_isolation = os.getenv('NV_GPU', '').replace(',', ' ').split()
+    pattern = re.compile(r'/nvidia([0-9]+)$')
+    for device in nvidia_config['Devices']:
+        if gpu_isolation:
+            card_number = pattern.search(device)
+            if card_number and (card_number.group(1) not in gpu_isolation):
+                continue
+        devices.extend(parse_devices([device]))
+
+    container_config['HostConfig']['Devices'] = devices
+
+
+@contextlib.contextmanager
+def handle_connection_errors(client):
+    with handle_connection_errors_orig(client):
+        try:
+            yield
+        except NvidiaConnectionError as e:
+            exit_with_error(e.msg)
+
+
+# Monkey patch!!!!
+if nvidia_docker_compatible():
+    import compose.cli.docker_client
+    compose.cli.docker_client.APIClient = NvidiaAPIClient
+    compose.cli.errors.handle_connection_errors = handle_connection_errors
+
+main()

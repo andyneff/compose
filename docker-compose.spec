@@ -2,7 +2,7 @@
 
 block_cipher = None
 
-a = Analysis(['bin/docker-compose'],
+a = Analysis(['bin/nvidia-docker-compose'],
              pathex=['.'],
              hiddenimports=[],
              hookspath=None,
