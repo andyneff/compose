@@ -2,7 +2,7 @@
 
 set -ex
 
-TARGET=dist/docker-compose-$(uname -s)-$(uname -m)
+TARGET=dist/nvidia-docker-compose-$(uname -s)-$(uname -m)
 VENV=/code/.tox/py27
 
 mkdir -p `pwd`/dist

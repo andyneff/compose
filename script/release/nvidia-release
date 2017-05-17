@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+set -euE
+
+if (( $# < 1 )); then
+  echo "Rebases nvidia-docker-compose changes for you, rebuilds, and retags it for you."
+  echo
+  echo "usage:   $0 <tag name>"
+  exit 1
+fi
+
+#git checkout nvidia-docker-compose
+git checkout "${1}"
+git cherry-pick master..nvidia-docker-compose
+git tag "${1}_nv"
+
+./script/build/linux
