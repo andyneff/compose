@@ -8,7 +8,7 @@ from docker.utils.utils import parse_devices
 
 from compose.cli.main import main
 from docker.api.client import APIClient as APIClient_orig
-from docker.errors import DockerException
+from docker.errors import DockerException, NotFound
 
 import contextlib
 import compose.cli.errors
@@ -69,9 +69,20 @@ class NvidiaAPIClient(APIClient_orig):
                             create_container_config(image, *args, **kwargs))
 
         if self.is_nvidia_image(image):
-            add_nvidia_docker_to_config(container_config)
+            nvidia_config = get_nvidia_configuration()
+            self.create_nvidia_volume(nvidia_config)
+            add_nvidia_docker_to_config(container_config, nvidia_config)
 
         return container_config
+
+    def create_nvidia_volume(self, nvidia_config):
+        """ Create the nvidia volume if it doesn't already exist """
+        try:
+            volume_name = nvidia_config['Volumes'][0].split(':')[0]
+            self.inspect_volume(volume_name)
+        except NotFound:
+            self.create_volume(volume_name,
+                               driver=nvidia_config['VolumeDriver'])
 
 
 def get_nvidia_docker_endpoint():
@@ -98,17 +109,12 @@ def nvidia_docker_compatible():
             find_executable('nvidia-docker'))
 
 
-def add_nvidia_docker_to_config(container_config):
+def add_nvidia_docker_to_config(container_config, nvidia_config):
 
     if not container_config.get('HostConfig', None):
         container_config['HostConfig'] = {}
 
-    nvidia_config = get_nvidia_configuration()
-
-    # Setup the Volumes
-    container_config['HostConfig'].setdefault('VolumeDriver',
-                                              nvidia_config['VolumeDriver'])
-
+    # # Setup the Volumes
     container_config['HostConfig'].setdefault('Binds', [])
     container_config['HostConfig']['Binds'].extend(nvidia_config['Volumes'])
 
