@@ -61,8 +61,12 @@ class NvidiaAPIClient(APIClient_orig):
     """  # noqa: E501
 
     def is_nvidia_image(self, image):
-        return (self.inspect_image(image).get('Config', {}).get('Labels', {}).
-                get('com.nvidia.volumes.needed', None) == 'nvidia_driver')
+        labels = self.inspect_image(image).get('Config', {}).get('Labels', {})
+        if labels:
+            return (labels.get('com.nvidia.volumes.needed',
+                               None) == 'nvidia_driver')
+        else:
+            return False
 
     def create_container_config(self, image, *args, **kwargs):
         container_config = (super(NvidiaAPIClient, self).
@@ -89,7 +93,7 @@ def get_nvidia_docker_endpoint():
     host = os.environ.get(NVIDIA_HOST,
                           "http://{}:{}".format(NVIDIA_DEFAULT_HOST,
                                                 NVIDIA_DEFAULT_PORT))
-    return host+'/docker/cli/json'
+    return host + '/docker/cli/json'
 
 
 def get_nvidia_configuration():
@@ -120,6 +124,8 @@ def add_nvidia_docker_to_config(container_config, nvidia_config):
 
     # Get nvidia control devices
     devices = container_config['HostConfig'].get('Devices', [])
+    if devices is None:
+        devices = []
     # suport both '0 1' and '0, 1' formats, just like nvidia-docker
     gpu_isolation = os.getenv('NV_GPU', '').replace(',', ' ').split()
     pattern = re.compile(r'/nvidia([0-9]+)$')
